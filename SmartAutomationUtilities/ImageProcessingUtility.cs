@@ -25,7 +25,7 @@ public class ImageProcessingUtil
     /// <returns></returns>
     public static DataTable LoadEntityInDataTableFormat(byte[][] imageBytes, int[] threshold)
     {
-        //For Dimension of 1500 X 1080 (Set it to remove that section which is unwanted in the screenshot)
+        //For Dimension of 1500 X 1080 (Set it to consider the height of prev screenshot while dealing with second image)
         //var yOffset = 545;
 
         //DataTable to store sentence and their trailing entities
@@ -112,7 +112,84 @@ public class ImageProcessingUtil
     public static Dictionary<string, List<dynamic>> GetWordBasedOnColorProcessing(byte[][] imageBytes, int[] threshold,
     double scaleFactor, float xL, float yT)
     {
+        //For Dimension of 1500 X 1080 (Set it to consider the height of prev screenshot while dealing with second image)
+        var yOffset = 545;
 
+        Dictionary<string, List<dynamic>> wordBasedInfo = [];
+
+        //Get working directory and set the training data location according to requirement
+        var workingDirectory = Directory.GetCurrentDirectory();
+        var path = string.Concat(workingDirectory, "..\\tessdata");
+
+        //Initialize Tesseract OCR engine
+        using var engine = new TesseractEngine(path, "eng", EngineMode.Default);
+
+        //Loop the segments of screenshot provided
+        for (int i = 0; i < imageBytes.Length; i++)
+        {
+            //Raw colored image
+            Mat rawImg = new();
+            CvInvoke.Imdecode(imageBytes[i], ImreadModes.Color, rawImg);
+
+            //Grey scale image
+            Mat gray = new();
+            CvInvoke.CvtColor(rawImg, gray, ColorConversion.Bgr2Gray);
+
+            /*Adaptive thresholding algorithm application with 255 as the max value with best combination provided
+            * i.e. Gaussian and Binary adaptive thresholding parameters
+            * Setting the blocksize and cancelling parameter with threshold array values
+            */
+            Mat thresh = new();
+
+            if (threshold.Length > 0)
+                CvInvoke.AdaptiveThreshold(gray, thresh, 255, AdaptiveThresholdType.GaussianC,
+                ThresholdType.Binary, threshold[0], threshold[1]);
+            else
+                thresh = gray;
+
+            var page = engine.Process(PixConverter.ToPix(thresh.ToBitmap()), Tesseract.PageSegMode.Auto);
+
+            var iterator = page.GetIterator();
+            iterator.Begin();
+
+            do
+            {
+                var word = iterator.GetText(Tesseract.PageIteratorLevel.Word);
+
+                //If confidence is less than 80%, then process the extracted word further
+                if (word.Trim() != string.Empty && iterator.TryGetBoundingBox(Tesseract.PageIteratorLevel.Word, out var rect))
+                {
+                    Rectangle roi = new(rect.X1, rect.Y1, rect.Width, rect.Height);
+
+                    //Adjustment with expansion
+                    Rectangle expandedROI = new(Math.Max(0, rect.X1 - 2), Math.Max(0, rect.Y1 - 2),
+                    rect.Width + 2, rect.Height + 2);
+
+                    Mat roiImg = new(rawImg, expandedROI);
+
+                    //Convert ROI image to HSV color
+                    Mat hsvColorImg = new();
+                    CvInvoke.CvtColor(roiImg, hsvColorImg, ColorConversion.Bgr2Hsv);
+
+                    //Calculate the average color of the ROI in HSV
+                    MCvScalar avgColor = CvInvoke.Mean(hsvColorImg);
+
+                    //Depending on the color above assign colorname
+                    string colorName = "";
+
+                    Rectangle adjustedROI = i == 0 ?
+
+                     new Rectangle((int)((roi.X + xL) / scaleFactor), (int)((roi.Y + yT) / scaleFactor), roi.Width, roi.Height)
+
+                    : new Rectangle((int)((roi.X + xL) / scaleFactor), (int)((roi.Y + yOffset) / scaleFactor), roi.Width, roi.Height);
+
+                    if (!wordBasedInfo.ContainsKey(word.Trim()))
+                        wordBasedInfo.Add(word.Trim(), [colorName, adjustedROI]);
+                }
+
+            } while (iterator.Next(Tesseract.PageIteratorLevel.Word));
+        }
+        return wordBasedInfo;
     }
 
     private static string GetCorrectedText(Mat roiImg)
