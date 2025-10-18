@@ -12,3 +12,5 @@ _This utily package covers three unique areas namely_
 
 - EmguCV
 - PdfPig
+- Azure.AI
+- Open AI

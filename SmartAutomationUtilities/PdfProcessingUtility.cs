@@ -1,9 +1,13 @@
 
 using System.Drawing;
+using Emgu.CV;
+using Emgu.CV.CvEnum;
+using Emgu.CV.Structure;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Annotations;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.Core;
+using UglyToad.PdfPig.Rendering.Skia;
 
 namespace SmartAutomationUtilities;
 
@@ -55,7 +59,7 @@ public class PdfProcessingUtil
     }
 
     /// <summary>
-    /// Get nearest word or object near the annotation
+    /// Get nearest word or object near the annotations
     /// </summary>
     /// <param name="bytes"></param>
     /// <param name="annotationType"></param>
@@ -83,6 +87,8 @@ public class PdfProcessingUtil
                 //Refer first three nearest elements
                 var nearestWords = words.OrderBy(w => w.Distance).Take(3).Select(e => e.Text).ToList();
 
+                //Can include nearest words check if needed
+
                 annotationBasedNearestWords.Add($"{page.Number}_{++count}", nearestWords);
             }
 
@@ -92,6 +98,87 @@ public class PdfProcessingUtil
         return pageBasedNearestWord;
     }
 
+    public static string DetermineAnnotationColorOfNearestWord(byte[] bytes, float scalingFactor, string expectedWord, AnnotationType annotationType)
+    {
+        Dictionary<int, List<Annotation>> pageBasedAnnotation = ReadAnnotations(bytes, annotationType);
+
+        Dictionary<int, Dictionary<string, string>> pageBasedColorList = [];
+
+        using PdfDocument document = PdfDocument.Open(bytes);
+
+        document.AddSkiaPageFactory();
+
+        for (int pageIndex = 1; pageIndex <= document.NumberOfPages; pageIndex++)
+        {
+            pageBasedColorList.Add(pageIndex, []);
+
+            using MemoryStream stream = document.GetPageAsPng(pageIndex, scalingFactor);
+            byte[] streamBytes = stream.ToArray();
+
+            Mat img = new();
+            CvInvoke.Imdecode(streamBytes, ImreadModes.Color, img);
+
+            Page page = document.GetPage(pageIndex);
+
+            foreach (var listAnnotation in pageBasedAnnotation[pageIndex])
+            {
+                var words = page.GetWords().Select(word => new
+                {
+                    Text = word.Text,
+                    BoundingBox = word.BoundingBox,
+                    Distance = CalculateDistance(word.BoundingBox, listAnnotation.Rectangle.TopLeft.X, listAnnotation.Rectangle.TopLeft.Y)
+                });
+
+                var nearestWords = words.OrderBy(w => w.Distance).Take(3).Select(w => w.Text).ToList();
+
+                if (nearestWords.Contains(expectedWord))
+                {
+                    int adjustedX = (int)(listAnnotation.Rectangle.TopLeft.X * scalingFactor);
+                    int adjustedY = (int)((img.Height - listAnnotation.Rectangle.TopLeft.Y) * scalingFactor);
+
+                    Rectangle annotationRect = new(
+                    adjustedX,
+                    adjustedY,
+                    (int)(listAnnotation.Rectangle.Width * scalingFactor),
+                    (int)(listAnnotation.Rectangle.Height * scalingFactor)
+                    );
+
+                    //Extract the ROI
+                    Mat roiImg = new(img, annotationRect);
+
+                    Mat hsvRoiImg = new();
+                    CvInvoke.CvtColor(roiImg, hsvRoiImg, ColorConversion.Bgr2Hsv);
+
+                    MCvScalar avgColor = CvInvoke.Mean(hsvRoiImg);
+                    return ""; //Determine the color using own scale
+                }
+            }
+        }
+
+        return "";
+    }
+
+
+    public static Dictionary<int, Dictionary<string, string>> DetermineAnnotationContent(byte[] bytes, AnnotationType annotationType)
+    {
+
+        Dictionary<int, Dictionary<string, string>> pageBasedAnnotationContentList = [];
+
+        using PdfDocument document = PdfDocument.Open(bytes);
+
+        foreach (Page page in document.GetPages())
+        {
+            pageBasedAnnotationContentList.Add(page.Number, []);
+            var count = 0;
+            foreach (Annotation annot in page.GetAnnotations())
+            {
+                count++;
+                if (annot.Content != null)
+                    pageBasedAnnotationContentList[page.Number].Add($"{page.Number}_{count}", annot.Content.Trim());
+            }
+        }
+        return pageBasedAnnotationContentList;
+    }
 
     private static double CalculateDistance(PdfRectangle rect, double x, double y)
     {
